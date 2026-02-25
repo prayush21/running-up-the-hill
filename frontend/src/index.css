@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #1a3a6d;
+    background-image: 
+      linear-gradient(rgba(245, 245, 220, 0.1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(245, 245, 220, 0.1) 1px, transparent 1px);
+    background-size: 40px 40px;
+    background-position: center center;
+    color: #f5f5dc;
+    font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+}
+
+.glass-panel {
+  background: rgba(15, 41, 85, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(245, 245, 220, 0.15);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+.guess-bar-bg {
+  background: rgba(245, 245, 220, 0.1);
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.guess-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.8s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 41, 85, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(245, 245, 220, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(245, 245, 220, 0.5);
+}

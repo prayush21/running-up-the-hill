@@ -1,0 +1,7 @@
+fastapi==0.111.0
+uvicorn==0.30.1
+python-socketio==5.11.2
+pydantic==2.7.4
+spacy==3.7.5
+better-profanity==0.7.0
+nltk==3.9.3

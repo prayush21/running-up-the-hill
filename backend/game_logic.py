@@ -26,6 +26,53 @@ MEANINGFUL_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV", "PROPN"}
 # Minimum word length for target words
 MIN_WORD_LENGTH = 4
 
+def get_word_family_key(word):
+    """Return the strict family key for a word.
+
+    Group only:
+    - plural nouns/proper nouns
+    - comparative adjectives/adverbs
+
+    All other forms keep their original lowercase surface form.
+    """
+    normalized = word.lower().strip()
+    if nlp is None or not normalized:
+        return normalized
+
+    doc = nlp(normalized)
+    if len(doc) == 0:
+        return normalized
+
+    token = doc[0]
+    lemma = token.lemma_.lower() if token.lemma_ else normalized
+
+    def normalize_comparative_base(text):
+        if text.endswith("ier") and len(text) > 4:
+            return text[:-3] + "y"
+        if text.endswith("er") and len(text) > 3:
+            base = text[:-2]
+            if len(base) >= 2 and base[-1] == base[-2]:
+                base = base[:-1]
+            return base
+        return text
+
+    is_explicit_plural_noun = token.pos_ in {"NOUN", "PROPN"} and "Plur" in token.morph.get("Number")
+    is_plural_like_surface = (
+        (normalized.endswith("s") or normalized.endswith("es"))
+        and normalized != lemma
+        and token.tag_ in {"NNS", "NNPS", "VBZ"}
+    )
+    is_plural_noun = is_explicit_plural_noun or is_plural_like_surface
+    is_comparative = token.pos_ in {"ADJ", "ADV"} and "Cmp" in token.morph.get("Degree")
+
+    if is_plural_noun:
+        return lemma
+
+    if is_comparative:
+        return lemma if lemma != normalized else normalize_comparative_base(normalized)
+
+    return normalized
+
 def is_meaningful_word(word):
     """
     Check if a word is meaningful and tangible (not a function word like 'the', 'a', 'is', etc.)
@@ -77,8 +124,11 @@ class ContextoGame:
         self.vocab_tokens = []
         self.target_word = None
         self.target_token = None
+        self.target_family_key = None
         self.ranks = {}
         self.ranked_vocab = []
+        self.family_representatives = {}
+        self.family_tokens = {}
     
     def _filter_meaningful_vocab(self):
         """Filter vocabulary to only include meaningful, tangible words.
@@ -120,11 +170,15 @@ class ContextoGame:
             # Select from meaningful words only (no function words like 'the', 'a', 'is')
             raw_target = random.choice(self.meaningful_vocab).lower()
             
-        target_doc = nlp(raw_target)
-        lemma_target = target_doc[0].lemma_ if len(target_doc) > 0 else raw_target
-        self.target_word = lemma_target if nlp(lemma_target).has_vector else raw_target
+        self.target_word = raw_target
+        self.target_family_key = get_word_family_key(self.target_word)
+
+        if self.target_family_key != self.target_word and nlp(self.target_family_key).has_vector:
+            target_lookup_word = self.target_family_key
+        else:
+            target_lookup_word = self.target_word
             
-        self.target_token = nlp(self.target_word)
+        self.target_token = nlp(target_lookup_word)
         if not self.target_token.has_vector:
             raise ValueError(f"Target word '{self.target_word}' is out of vocabulary.")
             
@@ -149,14 +203,29 @@ class ContextoGame:
             await emit_cb("Pre-computing ranks vs target...")
         print(f"Pre-computing ranks vs target: {self.target_word}")
         self.ranked_vocab = []
+        self.family_representatives = {}
+        self.family_tokens = {}
+
+        family_best = {}
         for i, t in enumerate(self.vocab_tokens):
+            word = t.text.lower()
+            family_key = get_word_family_key(word)
             sim = self.target_token.similarity(t)
-            self.ranked_vocab.append((t.text, sim))
+
+            best = family_best.get(family_key)
+            if best is None or sim > best[1]:
+                family_best[family_key] = (word, sim)
+
             if i % 1000 == 0:
                 await asyncio.sleep(0)
-            
-        self.ranked_vocab.sort(key=lambda x: x[1], reverse=True)
-        self.ranks = {word: rank + 1 for rank, (word, sim) in enumerate(self.ranked_vocab)}
+
+        self.ranked_vocab = sorted(family_best.values(), key=lambda x: x[1], reverse=True)
+        self.ranks = {}
+        for rank, (word, sim) in enumerate(self.ranked_vocab, start=1):
+            family_key = get_word_family_key(word)
+            self.ranks[family_key] = rank
+            self.family_representatives[family_key] = word
+            self.family_tokens[family_key] = nlp(word)
 
     def process_guess(self, guess):
         guess = guess.lower().strip()
@@ -170,23 +239,25 @@ class ContextoGame:
         if " " in guess:
             return {"error": "Single words only"}
             
-        # Bring guess to its root form (lemma) if the root is in the vocab
-        guess_doc = nlp(guess)
-        lemma = guess_doc[0].lemma_ if len(guess_doc) > 0 else guess
-        search_word = lemma if nlp(lemma).has_vector else guess
-
-        guess_token = nlp(search_word)
+        family_key = get_word_family_key(guess)
+        search_word = self.family_representatives.get(family_key, guess)
+        guess_token = self.family_tokens.get(family_key, nlp(search_word))
         if not guess_token.has_vector:
-            return {"error": "Word not found in dictionary"}
+            fallback_token = nlp(guess)
+            if not fallback_token.has_vector:
+                return {"error": "Word not found in dictionary"}
+            guess_token = fallback_token
+            family_key = guess
+            search_word = guess
             
         similarity = self.target_token.similarity(guess_token)
         
-        rank = self.ranks.get(search_word, None)
+        rank = self.ranks.get(family_key, None)
         if rank is None:
             # Estimate rank for valid words not in top 10k list
             rank = sum(1 for _, sim in self.ranked_vocab if sim > similarity) + 1
             
-        is_correct = (search_word == self.target_word)
+        is_correct = (family_key == self.target_family_key)
         
         result = {
             "word": search_word,
@@ -197,7 +268,17 @@ class ContextoGame:
         }
 
         if is_correct:
-            result["top_10"] = [{"word": w, "similarity": float(s), "rank": r+2} for r, (w, s) in enumerate(self.ranked_vocab[1:11])]
+            top_words = []
+            for w, s in self.ranked_vocab:
+                if get_word_family_key(w) == self.target_family_key:
+                    continue
+                top_words.append((w, s))
+                if len(top_words) == 10:
+                    break
+            result["top_10"] = [
+                {"word": w, "similarity": float(s), "rank": r + 2}
+                for r, (w, s) in enumerate(top_words)
+            ]
             
         return result
 
@@ -207,24 +288,22 @@ class ContextoGame:
         else:
             target_rank = max(1, best_rank // 2)
             
-        # Due to stemming in process_guess, the exact word at target_rank might evaluate
-        # to a lower rank (like 553 instead of 300) when actually guessed.
-        # We search from target_rank downwards to find a word that correctly evaluates to <= target_rank.
+        # Because guesses are normalized to strict word families, search downward to find
+        # a family representative that evaluates to <= target_rank.
         start_idx = min(target_rank - 1, len(self.ranked_vocab) - 1)
         for idx in range(start_idx, -1, -1):
             w = self.ranked_vocab[idx][0]
+            family_key = get_word_family_key(w)
+
+            if family_key == self.target_family_key:
+                continue
             
-            # Simulate what process_guess does
-            guess_doc = nlp(w)
-            lemma = guess_doc[0].lemma_ if len(guess_doc) > 0 else w
-            search_word = lemma if nlp(lemma).has_vector else w
-            
-            guess_token = nlp(search_word)
+            guess_token = self.family_tokens.get(family_key, nlp(w))
             if not guess_token.has_vector:
                 continue
                 
             similarity = self.target_token.similarity(guess_token)
-            rank = self.ranks.get(search_word, None)
+            rank = self.ranks.get(family_key, None)
             if rank is None:
                 rank = sum(1 for _, sim in self.ranked_vocab if sim > similarity) + 1
                 
@@ -232,4 +311,7 @@ class ContextoGame:
                 return w
                 
         # Fallback if nothing is found
+        for w, _ in self.ranked_vocab:
+            if get_word_family_key(w) != self.target_family_key:
+                return w
         return self.ranked_vocab[0][0]

@@ -20,18 +20,87 @@ except OSError:
 
 profanity.load_censor_words()
 
+# POS tags that indicate meaningful, tangible words (nouns, verbs, adjectives, adverbs)
+MEANINGFUL_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV", "PROPN"}
+
+# Minimum word length for target words
+MIN_WORD_LENGTH = 4
+
+def is_meaningful_word(word):
+    """
+    Check if a word is meaningful and tangible (not a function word like 'the', 'a', 'is', etc.)
+    
+    Returns True for nouns, verbs, adjectives, adverbs with length >= MIN_WORD_LENGTH.
+    Returns False for:
+    - Determiners (the, a, an)
+    - Prepositions (in, on, at, above)
+    - Pronouns (he, she, it, you, we)
+    - Conjunctions (and, but, or)
+    - Auxiliary verbs (is, are, was, be, have)
+    - Particles (to, not)
+    - Words shorter than MIN_WORD_LENGTH
+    """
+    if nlp is None:
+        return False
+    
+    if len(word) < MIN_WORD_LENGTH:
+        return False
+    
+    doc = nlp(word)
+    if len(doc) == 0:
+        return False
+    
+    token = doc[0]
+    
+    # Check POS tag
+    if token.pos_ not in MEANINGFUL_POS_TAGS:
+        return False
+    
+    # Additional check: exclude common auxiliary/function verbs even if tagged as VERB
+    function_verbs = {"be", "is", "are", "was", "were", "been", "being", 
+                      "have", "has", "had", "having", "do", "does", "did",
+                      "will", "would", "shall", "should", "may", "might",
+                      "can", "could", "must"}
+    if word.lower() in function_verbs:
+        return False
+    
+    return True
+
 class ContextoGame:
     def __init__(self):
         if nlp is None:
             raise RuntimeError("Spacy model not loaded.")
         
         self.vocab = self.load_vocab()
+        self.meaningful_vocab = self._filter_meaningful_vocab()
         
         self.vocab_tokens = []
         self.target_word = None
         self.target_token = None
         self.ranks = {}
         self.ranked_vocab = []
+    
+    def _filter_meaningful_vocab(self):
+        """Filter vocabulary to only include meaningful, tangible words.
+        
+        Also ensures that the lemmatized form of the word is meaningful,
+        to avoid cases like 'days' becoming 'day' (too short).
+        """
+        print("Filtering vocabulary for meaningful target words...")
+        meaningful = []
+        for w in self.vocab[:2000]:
+            if not is_meaningful_word(w):
+                continue
+            # Also check the lemmatized form
+            doc = nlp(w)
+            if len(doc) > 0:
+                lemma = doc[0].lemma_
+                # If lemma is different and doesn't meet criteria, skip this word
+                if lemma != w and len(lemma) < MIN_WORD_LENGTH:
+                    continue
+            meaningful.append(w)
+        print(f"Found {len(meaningful)} meaningful words from top 2000")
+        return meaningful
 
     async def initialize(self, target_word=None, emit_cb=None):
         if emit_cb:
@@ -48,7 +117,8 @@ class ContextoGame:
         if target_word:
             raw_target = target_word.lower().strip()
         else:
-            raw_target = random.choice(self.vocab[:1000]).lower()
+            # Select from meaningful words only (no function words like 'the', 'a', 'is')
+            raw_target = random.choice(self.meaningful_vocab).lower()
             
         target_doc = nlp(raw_target)
         lemma_target = target_doc[0].lemma_ if len(target_doc) > 0 else raw_target

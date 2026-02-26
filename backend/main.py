@@ -38,6 +38,7 @@ async def disconnect(sid):
 async def join_room(sid, data):
     room_id = data.get("room_id")
     player_name = data.get("player_name")
+    target_word = data.get("target_word")  # Optional custom target word
     
     if not room_id or not player_name:
         await sio.emit("error", {"msg": "room_id and player_name required"}, to=sid)
@@ -45,7 +46,7 @@ async def join_room(sid, data):
         
     # Initialize room if it doesn't exist
     if room_id not in rooms:
-        print(f"Creating new room: {room_id}")
+        print(f"Creating new room: {room_id}" + (f" with target word: {target_word}" if target_word else ""))
         game = ContextoGame()
         rooms[room_id] = {
             "game": game,
@@ -59,7 +60,7 @@ async def join_room(sid, data):
             
         async def init_game():
             try:
-                await game.initialize(emit_cb=emit_progress)
+                await game.initialize(target_word=target_word, emit_cb=emit_progress)
                 await sio.emit("room_loading", {"msg": ""}, room=room_id)
             except Exception as e:
                 print(f"Failed to initialize game for room {room_id}: {e}")

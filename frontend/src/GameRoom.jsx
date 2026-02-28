@@ -14,6 +14,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
     const [showPlayers, setShowPlayers] = useState(false);
     const [top10Nearest, setTop10Nearest] = useState(null);
     const [loadingMsg, setLoadingMsg] = useState('Initializing Game...');
+    const [isReady, setIsReady] = useState(false);
 
     const bottomRef = useRef(null);
 
@@ -25,8 +26,16 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
         });
 
         socket.on('room_state', (state) => {
+            const ready = !!state.ready;
+            setIsReady(ready);
+            if (!ready) {
+                // Keep the loading overlay until the server finishes initialization.
+                setLoadingMsg(prev => prev || 'Preparing game…');
+                return;
+            }
+
             setLoadingMsg('');
-            const initialGuesses = state.guesses.map(g => ({ ...g, isNew: false, timesGuessed: 1 }));
+            const initialGuesses = (state.guesses || []).map(g => ({ ...g, isNew: false, timesGuessed: 1 }));
             setGuesses(initialGuesses);
             setTotalWords(state.total_words || 0);
             if (state.players) setPlayers(state.players);
@@ -72,10 +81,20 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                 setWinningWord(guess.word);
                 if (guess.top_10) setTop10Nearest(guess.top_10);
             }
-            // Scroll to top to ensure input is visible
-            setTimeout(() => {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            }, 100);
+
+            // Only the player who submitted should auto-scroll to the input.
+            // Other players should see a notification without losing their scroll position.
+            if (guess.player_name === playerName) {
+                setTimeout(() => {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }, 100);
+            } else if (guess.player_name) {
+                // Only notify if viewer is scrolled down at least one viewport height.
+                if (window.scrollY >= window.innerHeight) {
+                    setToast(`📝 ${guess.player_name} guessed "${guess.word}"`);
+                    setTimeout(() => setToast(''), 2500);
+                }
+            }
         });
 
         socket.on('player_joined', (data) => {
@@ -123,6 +142,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
     const handleGuessSubmit = (e) => {
         e.preventDefault();
         if (!currentGuess.trim()) return;
+        if (!isReady) return;
         socket.emit('make_guess', {
             room_id: roomId,
             player_name: playerName,
@@ -183,7 +203,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                     </div>
                     <button
                         onClick={() => socket.emit('request_hint', { room_id: roomId, player_name: playerName })}
-                        disabled={!!winningWord}
+                        disabled={!isReady || !!winningWord}
                         className="text-xs uppercase tracking-widest p-2 border border-amber-500/50 text-amber-300 rounded hover:bg-amber-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed group relative"
                         title="Get a hint"
                     >
@@ -222,13 +242,13 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                             value={currentGuess}
                             onChange={(e) => setCurrentGuess(e.target.value)}
                             placeholder="Type your guess here..."
-                            disabled={!!winningWord}
+                            disabled={!isReady || !!winningWord}
                             className="w-full bg-blueprint-dark/95 backdrop-blur-sm border-2 border-blueprint-light focus:border-accent rounded-full px-6 py-4 text-lg outline-none text-cream shadow-[0_10px_30px_-10px_rgba(26,58,109,0.8)] transition-all disabled:opacity-50 font-game"
                             autoFocus
                         />
                         <button
                             type="submit"
-                            disabled={!currentGuess.trim() || !!winningWord}
+                            disabled={!isReady || !currentGuess.trim() || !!winningWord}
                             className="absolute right-2 top-2 bottom-2 bg-accent hover:bg-accent-hover disabled:opacity-50 text-blueprint-dark font-bold px-6 rounded-full transition-all flex items-center justify-center uppercase tracking-widest text-sm"
                         >
                             Guess

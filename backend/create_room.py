@@ -36,6 +36,8 @@ def create_room(target_word, room_code=None):
     
     @sio.event
     def room_state(data):
+        if not data.get("ready"):
+            return
         result["success"] = True
         result["total_words"] = data.get("total_words", 0)
         sio.disconnect()
@@ -48,6 +50,11 @@ def create_room(target_word, room_code=None):
     @sio.event
     def connect_error(data):
         print(f"Connection failed: {data}", file=sys.stderr)
+        sio.disconnect()
+
+    @sio.event
+    def error(data):
+        print(f"Server error: {data}", file=sys.stderr)
         sio.disconnect()
     
     try:

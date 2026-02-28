@@ -15,6 +15,17 @@ rooms = {}
 # Map sid to player info for easy cleanup on disconnect
 sid_to_info = {}
 
+def _get_room_state(room_id: str):
+    room = rooms[room_id]
+    ready = bool(room.get("ready"))
+    game = room.get("game")
+    return {
+        "guesses": room["guesses"],
+        "total_words": len(game.ranked_vocab) if (ready and game is not None) else 0,
+        "players": list(room["players"]),
+        "ready": ready,
+    }
+
 @sio.event
 async def connect(sid, environ):
     print(f"Client connected: {sid}")
@@ -47,12 +58,12 @@ async def join_room(sid, data):
     # Initialize room if it doesn't exist
     if room_id not in rooms:
         print(f"Creating new room: {room_id}" + (f" with target word: {target_word}" if target_word else ""))
-        game = ContextoGame()
         rooms[room_id] = {
-            "game": game,
+            "game": None,
             "guesses": [], # List of guess objects
             "players": set(),
-            "init_task": None
+            "init_task": None,
+            "ready": False,
         }
         
         async def emit_progress(msg):
@@ -60,10 +71,15 @@ async def join_room(sid, data):
             
         async def init_game():
             try:
+                game = ContextoGame()
                 await game.initialize(target_word=target_word, emit_cb=emit_progress)
+                rooms[room_id]["game"] = game
+                rooms[room_id]["ready"] = True
                 await sio.emit("room_loading", {"msg": ""}, room=room_id)
+                await sio.emit("room_state", _get_room_state(room_id), room=room_id)
             except Exception as e:
                 print(f"Failed to initialize game for room {room_id}: {e}")
+                await sio.emit("error", {"msg": "Failed to initialize game"}, room=room_id)
                 
         rooms[room_id]["init_task"] = asyncio.create_task(init_game())
         
@@ -76,16 +92,9 @@ async def join_room(sid, data):
         "player_name": player_name,
         "players": list(rooms[room_id]["players"])
     }, room=room_id)
-    
-    if rooms[room_id]["init_task"]:
-        await rooms[room_id]["init_task"]
-    
-    # Send current room state to the newly joined player
-    await sio.emit("room_state", {
-        "guesses": rooms[room_id]["guesses"],
-        "total_words": len(rooms[room_id]["game"].ranked_vocab),
-        "players": list(rooms[room_id]["players"])
-    }, to=sid)
+
+    # Non-blocking join: send state immediately, then broadcast updated state when ready.
+    await sio.emit("room_state", _get_room_state(room_id), to=sid)
 
 @sio.event
 async def make_guess(sid, data):
@@ -102,8 +111,15 @@ async def make_guess(sid, data):
     if not room:
         await sio.emit("error", {"msg": "Room not found"}, to=sid)
         return
+
+    if not room.get("ready"):
+        await sio.emit("guess_error", {"msg": "Game is still initializing. Please wait."}, to=sid)
+        return
         
-    game = room["game"]
+    game = room.get("game")
+    if game is None:
+        await sio.emit("guess_error", {"msg": "Game is still initializing. Please wait."}, to=sid)
+        return
     try:
         result = game.process_guess(guess_word)
     except Exception as e:
@@ -153,8 +169,15 @@ async def request_hint(sid, data):
     room = rooms.get(room_id)
     if not room:
         return
+
+    if not room.get("ready"):
+        await sio.emit("guess_error", {"msg": "Game is still initializing. Please wait."}, to=sid)
+        return
         
-    game = room["game"]
+    game = room.get("game")
+    if game is None:
+        await sio.emit("guess_error", {"msg": "Game is still initializing. Please wait."}, to=sid)
+        return
     
     best_rank = None
     for g in room["guesses"]:

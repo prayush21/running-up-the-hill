@@ -10,9 +10,16 @@ def connect():
 
 @sio.event
 def room_state(data):
+    if not data.get("ready"):
+        return
     print("Received room state with", len(data.get('guesses', [])), "guesses")
     print("Making a guess now...")
     sio.emit('make_guess', {'room_id': 'TESTROOM', 'player_name': 'Tester', 'guess': 'apple'})
+
+@sio.event
+def room_loading(data):
+    if data.get("msg"):
+        print("Loading:", data.get("msg"))
 
 @sio.event
 def new_guess(data):

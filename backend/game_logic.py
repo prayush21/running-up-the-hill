@@ -4,6 +4,7 @@ import urllib.request
 import os
 import random
 import asyncio
+import threading
 
 # The spaCy model will handle lemmatization
 
@@ -26,24 +27,15 @@ MEANINGFUL_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV", "PROPN"}
 # Minimum word length for target words
 MIN_WORD_LENGTH = 4
 
-def get_word_family_key(word):
-    """Return the strict family key for a word.
+_cache_lock = threading.Lock()
+_cached_vocab = None
+_cached_meaningful_vocab = None
+_cached_vocab_docs_with_vectors = None
+_cached_doc_by_word = None
+_cached_family_keys = None
 
-    Group only:
-    - plural nouns/proper nouns
-    - comparative adjectives/adverbs
 
-    All other forms keep their original lowercase surface form.
-    """
-    normalized = word.lower().strip()
-    if nlp is None or not normalized:
-        return normalized
-
-    doc = nlp(normalized)
-    if len(doc) == 0:
-        return normalized
-
-    token = doc[0]
+def _word_family_key_from_token(token, normalized):
     lemma = token.lemma_.lower() if token.lemma_ else normalized
 
     def normalize_comparative_base(text):
@@ -72,6 +64,130 @@ def get_word_family_key(word):
         return lemma if lemma != normalized else normalize_comparative_base(normalized)
 
     return normalized
+
+
+def load_vocab():
+    if not os.path.exists(VOCAB_FILE):
+        print("Downloading vocabulary list...")
+        import ssl
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(VOCAB_URL, context=ctx) as response, open(VOCAB_FILE, "wb") as out_file:
+            out_file.write(response.read())
+
+    with open(VOCAB_FILE, "r") as f:
+        return [line.strip().lower() for line in f if line.strip()]
+
+
+def _filter_meaningful_vocab(vocab):
+    """Filter vocabulary to only include meaningful, tangible words.
+
+    Also ensures that the lemmatized form of the word is meaningful,
+    to avoid cases like 'days' becoming 'day' (too short).
+    """
+    print("Filtering vocabulary for meaningful target words...")
+    meaningful = []
+    for w in vocab[:2000]:
+        if not is_meaningful_word(w):
+            continue
+        doc = nlp(w)
+        if len(doc) > 0:
+            lemma = doc[0].lemma_
+            if lemma != w and len(lemma) < MIN_WORD_LENGTH:
+                continue
+        meaningful.append(w)
+    print(f"Found {len(meaningful)} meaningful words from top 2000")
+    return meaningful
+
+
+def ensure_global_vocab_cache():
+    global _cached_vocab
+    global _cached_meaningful_vocab
+    global _cached_vocab_docs_with_vectors
+    global _cached_doc_by_word
+    global _cached_family_keys
+
+    if nlp is None:
+        raise RuntimeError("Spacy model not loaded.")
+
+    if (
+        _cached_vocab is not None
+        and _cached_meaningful_vocab is not None
+        and _cached_vocab_docs_with_vectors is not None
+        and _cached_doc_by_word is not None
+        and _cached_family_keys is not None
+    ):
+        return
+
+    with _cache_lock:
+        if (
+            _cached_vocab is not None
+            and _cached_meaningful_vocab is not None
+            and _cached_vocab_docs_with_vectors is not None
+            and _cached_doc_by_word is not None
+            and _cached_family_keys is not None
+        ):
+            return
+
+        vocab = load_vocab()
+        meaningful_vocab = _filter_meaningful_vocab(vocab)
+
+        vocab_docs_with_vectors = []
+        doc_by_word = {}
+        family_keys = {}
+
+        print("Precomputing vocab docs (has_vector) and family keys...")
+        for w in vocab:
+            normalized = w.lower().strip()
+            if not normalized:
+                continue
+
+            doc = nlp(normalized)
+            if len(doc) == 0:
+                family_keys[normalized] = normalized
+                continue
+
+            token = doc[0]
+            family_keys[normalized] = _word_family_key_from_token(token, normalized)
+
+            if doc.has_vector:
+                vocab_docs_with_vectors.append(doc)
+                doc_by_word[normalized] = doc
+
+        _cached_vocab = vocab
+        _cached_meaningful_vocab = meaningful_vocab
+        _cached_vocab_docs_with_vectors = vocab_docs_with_vectors
+        _cached_doc_by_word = doc_by_word
+        _cached_family_keys = family_keys
+
+
+async def ensure_global_vocab_cache_async(emit_cb=None):
+    if emit_cb:
+        await emit_cb("Preparing vocabulary cache...")
+    await asyncio.to_thread(ensure_global_vocab_cache)
+
+
+def get_word_family_key(word):
+    """Return the strict family key for a word.
+
+    Group only:
+    - plural nouns/proper nouns
+    - comparative adjectives/adverbs
+
+    All other forms keep their original lowercase surface form.
+    """
+    normalized = word.lower().strip()
+    if nlp is None or not normalized:
+        return normalized
+
+    doc = nlp(normalized)
+    if len(doc) == 0:
+        return normalized
+
+    token = doc[0]
+    return _word_family_key_from_token(token, normalized)
 
 def is_meaningful_word(word):
     """
@@ -115,11 +231,8 @@ def is_meaningful_word(word):
 
 class ContextoGame:
     def __init__(self):
-        if nlp is None:
-            raise RuntimeError("Spacy model not loaded.")
-        
-        self.vocab = self.load_vocab()
-        self.meaningful_vocab = self._filter_meaningful_vocab()
+        self.vocab = None
+        self.meaningful_vocab = None
         
         self.vocab_tokens = []
         self.target_word = None
@@ -156,13 +269,11 @@ class ContextoGame:
         if emit_cb:
             await emit_cb("Filtering vectors for vocabulary...")
         print("Filtering vectors for vocabulary...")
-        self.vocab_tokens = []
-        for i, w in enumerate(self.vocab):
-            t = nlp(w)
-            if t.has_vector:
-                self.vocab_tokens.append(t)
-            if i % 1000 == 0:
-                await asyncio.sleep(0)
+        await ensure_global_vocab_cache_async(emit_cb=emit_cb)
+        self.vocab = _cached_vocab
+        self.meaningful_vocab = _cached_meaningful_vocab
+        self.vocab_tokens = _cached_vocab_docs_with_vectors
+        await asyncio.sleep(0)
                 
         if target_word:
             raw_target = target_word.lower().strip()
@@ -185,18 +296,7 @@ class ContextoGame:
         await self._precompute_ranks(emit_cb)
 
     def load_vocab(self):
-        if not os.path.exists(VOCAB_FILE):
-            print("Downloading vocabulary list...")
-            import ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            with urllib.request.urlopen(VOCAB_URL, context=ctx) as response, open(VOCAB_FILE, 'wb') as out_file:
-                out_file.write(response.read())
-            
-        with open(VOCAB_FILE, "r") as f:
-            words = [line.strip().lower() for line in f if line.strip()]
-        return words
+        return load_vocab()
 
     async def _precompute_ranks(self, emit_cb=None):
         if emit_cb:
@@ -209,7 +309,9 @@ class ContextoGame:
         family_best = {}
         for i, t in enumerate(self.vocab_tokens):
             word = t.text.lower()
-            family_key = get_word_family_key(word)
+            family_key = _cached_family_keys.get(word) if _cached_family_keys is not None else None
+            if family_key is None:
+                family_key = get_word_family_key(word)
             sim = self.target_token.similarity(t)
 
             best = family_best.get(family_key)
@@ -222,10 +324,12 @@ class ContextoGame:
         self.ranked_vocab = sorted(family_best.values(), key=lambda x: x[1], reverse=True)
         self.ranks = {}
         for rank, (word, sim) in enumerate(self.ranked_vocab, start=1):
-            family_key = get_word_family_key(word)
+            family_key = _cached_family_keys.get(word) if _cached_family_keys is not None else None
+            if family_key is None:
+                family_key = get_word_family_key(word)
             self.ranks[family_key] = rank
             self.family_representatives[family_key] = word
-            self.family_tokens[family_key] = nlp(word)
+            self.family_tokens[family_key] = (_cached_doc_by_word.get(word) if _cached_doc_by_word is not None else None) or nlp(word)
 
     def process_guess(self, guess):
         guess = guess.lower().strip()

@@ -1,5 +1,5 @@
 import asyncio
-from game_logic import ContextoGame, is_meaningful_word, get_word_family_key
+from game_logic import ContextoGame, is_meaningful_word, get_word_family_key, nlp
 
 
 def test_is_meaningful_word():
@@ -43,7 +43,7 @@ def test_is_meaningful_word():
 
 
 def test_strict_word_family_grouping():
-    print("=== Testing strict word family grouping (plural + comparative only) ===\n")
+    print("=== Testing strict word family grouping (plural + comparative + verb inflections) ===\n")
 
     target_groups = {
         "nut": {
@@ -69,6 +69,14 @@ def test_strict_word_family_grouping():
         "swift": {
             "same_family": ["swifter"],
             "different_family": ["swiftly", "swiftness"]
+        },
+        "provide": {
+            "same_family": ["provided", "providing", "provides"],
+            "different_family": ["provider"]
+        },
+        "offer": {
+            "same_family": ["offered", "offering", "offers"],
+            "different_family": ["offeringly"]
         },
     }
 
@@ -124,6 +132,12 @@ async def test_contexto_game():
     correct_guess = game.process_guess("apple")
     assert correct_guess.get("is_correct") is True, "Exact match logic failed"
     assert correct_guess.get("rank") == 1, "Rank 1 check failed"
+    assert correct_guess.get("word") == "apple", "Canonical display word should be family key"
+    assert correct_guess.get("raw_guess") == "apple", "raw_guess should preserve original input"
+
+    plural_guess = game.process_guess("apples")
+    assert plural_guess.get("word") == "apple", "Plural should display canonical lemma/singular"
+    assert plural_guess.get("raw_guess") == "apples", "raw_guess should preserve original input"
 
     print("\n--- Testing Meaningful Vocab Filter ---")
     print(f"meaningful_vocab contains {len(game.meaningful_vocab)} words")
@@ -144,6 +158,11 @@ async def test_contexto_game():
     print("  Verifying all words in meaningful_vocab pass is_meaningful_word...")
     for word in game.meaningful_vocab:
         assert is_meaningful_word(word), f"'{word}' in meaningful_vocab but fails is_meaningful_word"
+        doc = nlp(word)
+        assert len(doc) > 0, f"Failed to parse '{word}'"
+        assert doc[0].pos_ in {"NOUN", "PROPN"}, (
+            f"'{word}' in meaningful_vocab but is tagged as {doc[0].pos_} (expected NOUN/PROPN)"
+        )
     print(f"  ✓ All {len(game.meaningful_vocab)} words pass is_meaningful_word check")
 
     print("\n--- Testing Random Word Selection ---")
@@ -156,6 +175,11 @@ async def test_contexto_game():
         status = "✓" if is_meaningful else "✗ FAILED"
         print(f"  Game {i + 1}: target='{target}' meaningful={is_meaningful} {status}")
         assert target not in function_words, f"Random target '{target}' is a function word!"
+        target_doc = nlp(target)
+        assert len(target_doc) > 0, f"Failed to parse random target '{target}'"
+        assert target_doc[0].pos_ in {"NOUN", "PROPN"}, (
+            f"Random target '{target}' tagged as {target_doc[0].pos_} (expected NOUN/PROPN)"
+        )
 
     print("\n✅ ContextoGame tests passed!\n")
 

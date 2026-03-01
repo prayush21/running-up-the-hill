@@ -137,6 +137,7 @@ async def make_guess(sid, data):
     # Valid guess, attach player info
     guess_entry = {
         "word": result["word"],
+        "raw_guess": result.get("raw_guess"),
         "similarity": result["similarity"],
         "rank": result["rank"],
         "player_name": player_name,

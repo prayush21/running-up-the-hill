@@ -24,6 +24,9 @@ profanity.load_censor_words()
 # POS tags that indicate meaningful, tangible words (nouns, verbs, adjectives, adverbs)
 MEANINGFUL_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV", "PROPN"}
 
+# POS tags allowed for RANDOM targets (custom target_word remains unrestricted).
+TARGET_POS_TAGS = {"NOUN", "PROPN"}
+
 # Minimum word length for target words
 MIN_WORD_LENGTH = 4
 
@@ -48,11 +51,16 @@ def _word_family_key_from_token(token, normalized):
             return base
         return text
 
+    # Group verb inflections (-ed/-ing/-s) to their verb lemma.
+    # Guardrail: do not collapse derivational changes like "provider" (NOUN) with "provide" (VERB).
+    if token.pos_ == "VERB":
+        return lemma
+
     is_explicit_plural_noun = token.pos_ in {"NOUN", "PROPN"} and "Plur" in token.morph.get("Number")
     is_plural_like_surface = (
         (normalized.endswith("s") or normalized.endswith("es"))
         and normalized != lemma
-        and token.tag_ in {"NNS", "NNPS", "VBZ"}
+        and token.tag_ in {"NNS", "NNPS"}
     )
     is_plural_noun = is_explicit_plural_noun or is_plural_like_surface
     is_comparative = token.pos_ in {"ADJ", "ADV"} and "Cmp" in token.morph.get("Degree")
@@ -82,19 +90,24 @@ def load_vocab():
 
 
 def _filter_meaningful_vocab(vocab):
-    """Filter vocabulary to only include meaningful, tangible words.
+    """Filter vocabulary for random target selection.
 
-    Also ensures that the lemmatized form of the word is meaningful,
-    to avoid cases like 'days' becoming 'day' (too short).
+    Restricts targets to NOUN/PROPN while also:
+    - respecting MIN_WORD_LENGTH
+    - excluding function words
+    - avoiding cases like 'days' -> 'day' (too short)
     """
-    print("Filtering vocabulary for meaningful target words...")
+    print("Filtering vocabulary for meaningful NOUN/PROPN target words...")
     meaningful = []
     for w in vocab[:2000]:
         if not is_meaningful_word(w):
             continue
         doc = nlp(w)
         if len(doc) > 0:
-            lemma = doc[0].lemma_
+            token = doc[0]
+            if token.pos_ not in TARGET_POS_TAGS:
+                continue
+            lemma = token.lemma_
             if lemma != w and len(lemma) < MIN_WORD_LENGTH:
                 continue
         meaningful.append(w)
@@ -175,6 +188,7 @@ def get_word_family_key(word):
     Group only:
     - plural nouns/proper nouns
     - comparative adjectives/adverbs
+    - verb inflections (to verb lemma)
 
     All other forms keep their original lowercase surface form.
     """
@@ -244,12 +258,14 @@ class ContextoGame:
         self.family_tokens = {}
     
     def _filter_meaningful_vocab(self):
-        """Filter vocabulary to only include meaningful, tangible words.
-        
-        Also ensures that the lemmatized form of the word is meaningful,
-        to avoid cases like 'days' becoming 'day' (too short).
+        """Filter vocabulary for random target selection.
+
+        Restricts targets to NOUN/PROPN while also:
+        - respecting MIN_WORD_LENGTH
+        - excluding function words
+        - avoiding cases like 'days' -> 'day' (too short)
         """
-        print("Filtering vocabulary for meaningful target words...")
+        print("Filtering vocabulary for meaningful NOUN/PROPN target words...")
         meaningful = []
         for w in self.vocab[:2000]:
             if not is_meaningful_word(w):
@@ -257,7 +273,10 @@ class ContextoGame:
             # Also check the lemmatized form
             doc = nlp(w)
             if len(doc) > 0:
-                lemma = doc[0].lemma_
+                token = doc[0]
+                if token.pos_ not in TARGET_POS_TAGS:
+                    continue
+                lemma = token.lemma_
                 # If lemma is different and doesn't meet criteria, skip this word
                 if lemma != w and len(lemma) < MIN_WORD_LENGTH:
                     continue
@@ -332,6 +351,7 @@ class ContextoGame:
             self.family_tokens[family_key] = (_cached_doc_by_word.get(word) if _cached_doc_by_word is not None else None) or nlp(word)
 
     def process_guess(self, guess):
+        raw_guess = guess
         guess = guess.lower().strip()
         
         if len(guess) == 0:
@@ -351,8 +371,6 @@ class ContextoGame:
             if not fallback_token.has_vector:
                 return {"error": "Word not found in dictionary"}
             guess_token = fallback_token
-            family_key = guess
-            search_word = guess
             
         similarity = self.target_token.similarity(guess_token)
         
@@ -364,7 +382,10 @@ class ContextoGame:
         is_correct = (family_key == self.target_family_key)
         
         result = {
-            "word": search_word,
+            # Display the canonical family form (lemma/singular) even if we used a
+            # different representative for similarity/rank lookup.
+            "word": family_key,
+            "raw_guess": raw_guess,
             "similarity": float(similarity),
             "rank": rank,
             "total_words": len(self.ranked_vocab),
@@ -374,13 +395,18 @@ class ContextoGame:
         if is_correct:
             top_words = []
             for w, s in self.ranked_vocab:
-                if get_word_family_key(w) == self.target_family_key:
+                family = get_word_family_key(w)
+                if family == self.target_family_key:
                     continue
-                top_words.append((w, s))
+                top_words.append((family, s))
                 if len(top_words) == 10:
                     break
             result["top_10"] = [
-                {"word": w, "similarity": float(s), "rank": r + 2}
+                {
+                    "word": w,
+                    "similarity": float(s),
+                    "rank": self.ranks.get(w, r + 2),
+                }
                 for r, (w, s) in enumerate(top_words)
             ]
             

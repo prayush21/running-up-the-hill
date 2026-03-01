@@ -2,6 +2,7 @@ import uvicorn
 import asyncio
 from fastapi import FastAPI
 import socketio
+import os
 from game_logic import ContextoGame
 
 # Setup Socket.io and FastAPI
@@ -194,7 +195,14 @@ async def request_hint(sid, data):
             "guess": hint_word
         })
 
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
 app = sio_app
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

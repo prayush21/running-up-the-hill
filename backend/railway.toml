@@ -1,6 +1,6 @@
 [build]
 # Install deps and ensure the required spaCy model is present.
-buildCommand = "pip install -r requirements.txt && python -m spacy download en_core_web_lg"
+buildCommand = "python -m pip install -U pip setuptools wheel && pip install -r requirements.txt && python -m spacy download en_core_web_lg"
 
 [deploy]
 startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"

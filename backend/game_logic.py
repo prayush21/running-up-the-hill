@@ -6,6 +6,7 @@ import random
 import asyncio
 import threading
 import re
+import numpy as np
 
 # The spaCy model will handle lemmatization.
 # IMPORTANT: We lazy-load it to avoid long cold-starts (e.g. on Railway).
@@ -27,10 +28,13 @@ def get_nlp():
         if _nlp is not None:
             return _nlp
 
-        model_name = os.environ.get("SPACY_MODEL", "en_core_web_lg")
+        # Default to a smaller model for production (e.g. 1GB Railway instances).
+        # Override with SPACY_MODEL=en_core_web_lg if you have enough RAM.
+        model_name = os.environ.get("SPACY_MODEL", "en_core_web_md")
         print(f"Loading Spacy model ({model_name})...")
         try:
-            _nlp = spacy.load(model_name)
+            # We don't need the full parsing/NER pipeline for gameplay.
+            _nlp = spacy.load(model_name, disable=["parser", "ner", "senter"])
         except OSError:
             print(f"Model not found: {model_name}. Run: python -m spacy download {model_name}")
             _nlp = None
@@ -55,8 +59,10 @@ MIN_WORD_LENGTH = 4
 _cache_lock = threading.Lock()
 _cached_vocab = None
 _cached_meaningful_vocab = None
-_cached_vocab_docs_with_vectors = None
-_cached_doc_by_word = None
+_cached_vocab_words_with_vectors = None
+_cached_vocab_vectors = None
+_cached_vocab_vector_norms = None
+_cached_vector_dim = None
 _cached_family_keys = None
 
 
@@ -132,8 +138,10 @@ def _filter_meaningful_vocab(vocab):
 def ensure_global_vocab_cache():
     global _cached_vocab
     global _cached_meaningful_vocab
-    global _cached_vocab_docs_with_vectors
-    global _cached_doc_by_word
+    global _cached_vocab_words_with_vectors
+    global _cached_vocab_vectors
+    global _cached_vocab_vector_norms
+    global _cached_vector_dim
     global _cached_family_keys
 
     nlp = get_nlp()
@@ -143,8 +151,10 @@ def ensure_global_vocab_cache():
     if (
         _cached_vocab is not None
         and _cached_meaningful_vocab is not None
-        and _cached_vocab_docs_with_vectors is not None
-        and _cached_doc_by_word is not None
+        and _cached_vocab_words_with_vectors is not None
+        and _cached_vocab_vectors is not None
+        and _cached_vocab_vector_norms is not None
+        and _cached_vector_dim is not None
         and _cached_family_keys is not None
     ):
         return
@@ -153,8 +163,10 @@ def ensure_global_vocab_cache():
         if (
             _cached_vocab is not None
             and _cached_meaningful_vocab is not None
-            and _cached_vocab_docs_with_vectors is not None
-            and _cached_doc_by_word is not None
+            and _cached_vocab_words_with_vectors is not None
+            and _cached_vocab_vectors is not None
+            and _cached_vocab_vector_norms is not None
+            and _cached_vector_dim is not None
             and _cached_family_keys is not None
         ):
             return
@@ -162,33 +174,44 @@ def ensure_global_vocab_cache():
         vocab = load_vocab()
         meaningful_vocab = _filter_meaningful_vocab(vocab)
 
-        vocab_docs_with_vectors = []
-        doc_by_word = {}
         family_keys = {}
+        words_with_vectors = []
+        vectors = []
 
-        print("Precomputing vocab docs (has_vector) and family keys...")
-        for w in vocab:
-            normalized = w.lower().strip()
+        print("Precomputing family keys and vector cache...")
+        for i, (w, doc) in enumerate(zip(vocab, nlp.pipe(vocab, batch_size=512))):
+            normalized = (w or "").lower().strip()
             if not normalized:
                 continue
 
-            doc = nlp(normalized)
-            if len(doc) == 0:
+            if doc is None or len(doc) == 0:
                 family_keys[normalized] = normalized
-                continue
+            else:
+                token = doc[0]
+                family_keys[normalized] = _word_family_key_from_token(token, normalized)
 
-            token = doc[0]
-            family_keys[normalized] = _word_family_key_from_token(token, normalized)
+            lex = nlp.vocab[normalized]
+            if lex.has_vector:
+                words_with_vectors.append(normalized)
+                vectors.append(lex.vector)
 
-            if doc.has_vector:
-                vocab_docs_with_vectors.append(doc)
-                doc_by_word[normalized] = doc
+            if i > 0 and i % 1000 == 0:
+                print(f"  cached {i}/{len(vocab)} words")
 
         _cached_vocab = vocab
         _cached_meaningful_vocab = meaningful_vocab
-        _cached_vocab_docs_with_vectors = vocab_docs_with_vectors
-        _cached_doc_by_word = doc_by_word
         _cached_family_keys = family_keys
+        _cached_vocab_words_with_vectors = words_with_vectors
+        if vectors:
+            mat = np.asarray(vectors, dtype=np.float32)
+            _cached_vocab_vectors = mat
+            norms = np.linalg.norm(mat, axis=1)
+            _cached_vocab_vector_norms = norms.astype(np.float32)
+            _cached_vector_dim = int(mat.shape[1])
+        else:
+            _cached_vocab_vectors = np.zeros((0, 0), dtype=np.float32)
+            _cached_vocab_vector_norms = np.zeros((0,), dtype=np.float32)
+            _cached_vector_dim = 0
 
 
 async def ensure_global_vocab_cache_async(emit_cb=None):
@@ -307,14 +330,17 @@ class ContextoGame:
         self.vocab = None
         self.meaningful_vocab = None
         
-        self.vocab_tokens = []
+        self.vocab_words = []
+        self.vocab_vectors = None
+        self.vocab_vector_norms = None
+        self.vector_dim = 0
         self.target_word = None
-        self.target_token = None
+        self.target_vector = None
+        self.target_vector_norm = None
         self.target_family_key = None
         self.ranks = {}
         self.ranked_vocab = []
         self.family_representatives = {}
-        self.family_tokens = {}
     
     def _filter_meaningful_vocab(self):
         """Filter vocabulary for random target selection.
@@ -344,7 +370,10 @@ class ContextoGame:
         await ensure_global_vocab_cache_async(emit_cb=emit_cb)
         self.vocab = _cached_vocab
         self.meaningful_vocab = _cached_meaningful_vocab
-        self.vocab_tokens = _cached_vocab_docs_with_vectors
+        self.vocab_words = _cached_vocab_words_with_vectors or []
+        self.vocab_vectors = _cached_vocab_vectors
+        self.vocab_vector_norms = _cached_vocab_vector_norms
+        self.vector_dim = int(_cached_vector_dim or 0)
         await asyncio.sleep(0)
                 
         if target_word:
@@ -356,14 +385,21 @@ class ContextoGame:
         self.target_word = raw_target
         self.target_family_key = get_word_family_key(self.target_word)
 
-        if self.target_family_key != self.target_word and nlp(self.target_family_key).has_vector:
-            target_lookup_word = self.target_family_key
-        else:
-            target_lookup_word = self.target_word
-            
-        self.target_token = nlp(target_lookup_word)
-        if not self.target_token.has_vector:
+        # Prefer a vectorized family key for the target if available.
+        target_lookup_word = self.target_word
+        lex = nlp.vocab[target_lookup_word]
+        if self.target_family_key != self.target_word:
+            fam_lex = nlp.vocab[self.target_family_key]
+            if fam_lex.has_vector:
+                lex = fam_lex
+                target_lookup_word = self.target_family_key
+
+        if not lex.has_vector:
             raise ValueError(f"Target word '{self.target_word}' is out of vocabulary.")
+        self.target_vector = np.asarray(lex.vector, dtype=np.float32)
+        self.target_vector_norm = float(np.linalg.norm(self.target_vector) or 0.0)
+        if self.target_vector_norm == 0.0:
+            raise ValueError(f"Target word '{self.target_word}' has no usable vector.")
             
         await self._precompute_ranks(emit_cb)
 
@@ -376,15 +412,20 @@ class ContextoGame:
         print(f"Pre-computing ranks vs target: {self.target_word}")
         self.ranked_vocab = []
         self.family_representatives = {}
-        self.family_tokens = {}
 
         family_best = {}
-        for i, t in enumerate(self.vocab_tokens):
-            word = t.text.lower()
-            family_key = _cached_family_keys.get(word) if _cached_family_keys is not None else None
-            if family_key is None:
-                family_key = get_word_family_key(word)
-            sim = self.target_token.similarity(t)
+        if self.vocab_vectors is None or self.vocab_vector_norms is None or self.target_vector is None:
+            raise RuntimeError("Vectors not initialized.")
+
+        denom = (self.target_vector_norm or 0.0) * self.vocab_vector_norms
+        valid = denom > 0
+        sims = np.full((len(self.vocab_words),), -1.0, dtype=np.float32)
+        if np.any(valid):
+            sims[valid] = (self.vocab_vectors[valid] @ self.target_vector) / denom[valid]
+
+        for i, word in enumerate(self.vocab_words):
+            family_key = (_cached_family_keys or {}).get(word) or get_word_family_key(word)
+            sim = float(sims[i])
 
             best = family_best.get(family_key)
             if best is None or sim > best[1]:
@@ -396,12 +437,9 @@ class ContextoGame:
         self.ranked_vocab = sorted(family_best.values(), key=lambda x: x[1], reverse=True)
         self.ranks = {}
         for rank, (word, sim) in enumerate(self.ranked_vocab, start=1):
-            family_key = _cached_family_keys.get(word) if _cached_family_keys is not None else None
-            if family_key is None:
-                family_key = get_word_family_key(word)
+            family_key = (_cached_family_keys or {}).get(word) or get_word_family_key(word)
             self.ranks[family_key] = rank
             self.family_representatives[family_key] = word
-            self.family_tokens[family_key] = (_cached_doc_by_word.get(word) if _cached_doc_by_word is not None else None) or nlp(word)
 
     def process_guess(self, guess):
         raw_guess = guess
@@ -425,14 +463,21 @@ class ContextoGame:
         if nlp is None:
             return {"error": "Dictionary unavailable (model not loaded)"}
 
-        guess_token = self.family_tokens.get(family_key, nlp(search_word))
-        if not guess_token.has_vector:
-            fallback_token = nlp(guess)
-            if not fallback_token.has_vector:
+        if self.target_vector is None or not self.target_vector_norm:
+            return {"error": "Game not ready"}
+
+        lex = nlp.vocab[search_word]
+        if not lex.has_vector:
+            lex = nlp.vocab[guess]
+            if not lex.has_vector:
                 return {"error": "Word not found in dictionary"}
-            guess_token = fallback_token
-            
-        similarity = self.target_token.similarity(guess_token)
+
+        guess_vec = np.asarray(lex.vector, dtype=np.float32)
+        guess_norm = float(np.linalg.norm(guess_vec) or 0.0)
+        if guess_norm == 0.0:
+            return {"error": "Word vector unavailable"}
+
+        similarity = float((guess_vec @ self.target_vector) / (guess_norm * self.target_vector_norm))
         
         rank = self.ranks.get(family_key, None)
         if rank is None:
@@ -455,7 +500,7 @@ class ContextoGame:
         if is_correct:
             top_words = []
             for w, s in self.ranked_vocab:
-                family = get_word_family_key(w)
+                family = (_cached_family_keys or {}).get(w) or get_word_family_key(w)
                 if family == self.target_family_key:
                     continue
                 top_words.append((family, s))
@@ -483,25 +528,19 @@ class ContextoGame:
         start_idx = min(target_rank - 1, len(self.ranked_vocab) - 1)
         for idx in range(start_idx, -1, -1):
             w = self.ranked_vocab[idx][0]
-            family_key = get_word_family_key(w)
+            family_key = (_cached_family_keys or {}).get(w) or get_word_family_key(w)
 
             if family_key == self.target_family_key:
                 continue
-            
-            guess_token = self.family_tokens.get(family_key, nlp(w))
-            if not guess_token.has_vector:
-                continue
-                
-            similarity = self.target_token.similarity(guess_token)
-            rank = self.ranks.get(family_key, None)
-            if rank is None:
-                rank = sum(1 for _, sim in self.ranked_vocab if sim > similarity) + 1
-                
+
+            # `ranked_vocab` is already unique per family and sorted by similarity.
+            # So idx+1 is effectively the rank for that family.
+            rank = self.ranks.get(family_key, idx + 1)
             if rank <= target_rank:
                 return w
                 
         # Fallback if nothing is found
         for w, _ in self.ranked_vocab:
-            if get_word_family_key(w) != self.target_family_key:
+            if ((_cached_family_keys or {}).get(w) or get_word_family_key(w)) != self.target_family_key:
                 return w
         return self.ranked_vocab[0][0]

@@ -6,8 +6,8 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
     const [guesses, setGuesses] = useState([]);
     const [lastGuess, setLastGuess] = useState(null);
     const [currentGuess, setCurrentGuess] = useState('');
-    const [errorMsg, setErrorMsg] = useState('');
     const [toast, setToast] = useState('');
+    const [activeDuplicateWord, setActiveDuplicateWord] = useState(null);
     const [totalWords, setTotalWords] = useState(0);
     const [winningWord, setWinningWord] = useState('');
     const [players, setPlayers] = useState([]);
@@ -17,6 +17,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
     const [isReady, setIsReady] = useState(false);
 
     const bottomRef = useRef(null);
+    const duplicateHighlightTimerRef = useRef(null);
 
     useEffect(() => {
         socket.emit('join_room', { room_id: roomId, player_name: playerName });
@@ -39,6 +40,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
             setGuesses(initialGuesses);
             setTotalWords(state.total_words || 0);
             if (state.players) setPlayers(state.players);
+            setActiveDuplicateWord(null);
 
             const myGuesses = initialGuesses.filter(g => g.player_name === playerName);
             if (myGuesses.length > 0) {
@@ -66,6 +68,13 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                     if (guess.player_name === playerName) {
                         setToast(`Already guessed!`);
                         setTimeout(() => setToast(''), 3000);
+                        setActiveDuplicateWord(guess.word);
+                        if (duplicateHighlightTimerRef.current) {
+                            clearTimeout(duplicateHighlightTimerRef.current);
+                        }
+                        duplicateHighlightTimerRef.current = setTimeout(() => {
+                            setActiveDuplicateWord(null);
+                        }, 2000);
                         // Do NOT update Last Guess slot, it's a duplicate
                     }
                 } else {
@@ -120,8 +129,8 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
         });
 
         socket.on('guess_error', (data) => {
-            setErrorMsg(data.msg);
-            setTimeout(() => setErrorMsg(''), 3000);
+            setToast(data.msg);
+            setTimeout(() => setToast(''), 3000);
         });
 
         socket.on('error', (data) => {
@@ -136,17 +145,28 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
             socket.off('player_left');
             socket.off('guess_error');
             socket.off('error');
+            if (duplicateHighlightTimerRef.current) {
+                clearTimeout(duplicateHighlightTimerRef.current);
+                duplicateHighlightTimerRef.current = null;
+            }
         };
     }, [roomId, playerName]);
 
+    const normalizedGuess = currentGuess.toLowerCase().trim();
+
     const handleGuessSubmit = (e) => {
         e.preventDefault();
-        if (!currentGuess.trim()) return;
+        if (!normalizedGuess) return;
         if (!isReady) return;
+        if (!/^[a-z]+$/.test(normalizedGuess)) {
+            setToast('Not a legal guess. Use letters only (A–Z), single word.');
+            setTimeout(() => setToast(''), 3000);
+            return;
+        }
         socket.emit('make_guess', {
             room_id: roomId,
             player_name: playerName,
-            guess: currentGuess.toLowerCase().trim()
+            guess: normalizedGuess
         });
         setCurrentGuess('');
     };
@@ -229,18 +249,11 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                     </div>
                 </div>
                 <div className="max-w-xl mx-auto relative">
-                    {errorMsg && (
-                        <div className="absolute -top-12 left-0 right-0 text-center">
-                            <span className="bg-rose-500 text-white text-xs font-bold px-4 py-2 rounded-full uppercase tracking-widest shadow-lg border border-rose-400 z-50">
-                                {errorMsg}
-                            </span>
-                        </div>
-                    )}
                     <form onSubmit={handleGuessSubmit} className="relative">
                         <input
                             type="text"
                             value={currentGuess}
-                            onChange={(e) => setCurrentGuess(e.target.value)}
+                            onChange={(e) => setCurrentGuess(e.target.value.toLowerCase())}
                             placeholder="Type your guess here..."
                             disabled={!isReady || !!winningWord}
                             className="w-full bg-blueprint-dark/95 backdrop-blur-sm border-2 border-blueprint-light focus:border-accent rounded-full px-6 py-4 text-lg outline-none text-cream shadow-[0_10px_30px_-10px_rgba(26,58,109,0.8)] transition-all disabled:opacity-50 font-game"
@@ -248,7 +261,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                         />
                         <button
                             type="submit"
-                            disabled={!isReady || !currentGuess.trim() || !!winningWord}
+                            disabled={!isReady || !normalizedGuess || !!winningWord}
                             className="absolute right-2 top-2 bottom-2 bg-accent hover:bg-accent-hover disabled:opacity-50 text-blueprint-dark font-bold px-6 rounded-full transition-all flex items-center justify-center uppercase tracking-widest text-sm"
                         >
                             Guess
@@ -267,7 +280,12 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
                         </p>
                     </div>
                 ) : (
-                    <GuessList guesses={guesses} lastGuess={lastGuess} playerName={playerName} />
+                    <GuessList
+                        guesses={guesses}
+                        lastGuess={lastGuess}
+                        playerName={playerName}
+                        activeDuplicateWord={activeDuplicateWord}
+                    />
                 )}
             </main>
 

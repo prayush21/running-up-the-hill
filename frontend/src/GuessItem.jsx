@@ -6,9 +6,8 @@ export function cn(...inputs) {
     return twMerge(clsx(inputs));
 }
 
-export default function GuessItem({ guess, index, isNew, isLatest, duplicateTrigger, playerName }) {
+export default function GuessItem({ guess, index, isNew, isLatest, isDuplicateHighlighted, playerName }) {
     const [showSwoosh, setShowSwoosh] = useState(false);
-    const [highlight, setHighlight] = useState(false);
 
     useEffect(() => {
         if (isNew) {
@@ -17,14 +16,6 @@ export default function GuessItem({ guess, index, isNew, isLatest, duplicateTrig
             setShowSwoosh(true);
         }
     }, [isNew]);
-
-    useEffect(() => {
-        if (duplicateTrigger) {
-            setHighlight(true);
-            const timer = setTimeout(() => setHighlight(false), 2000);
-            return () => clearTimeout(timer);
-        }
-    }, [duplicateTrigger]);
 
     // Color mapping based on rank
     const getRankColor = (rank) => {
@@ -42,13 +33,11 @@ export default function GuessItem({ guess, index, isNew, isLatest, duplicateTrig
         <div
             className={cn(
                 "relative rounded-xl border overflow-hidden mb-1.5 transition-colors duration-500 bg-blueprint-dark/40",
-                highlight
+                isDuplicateHighlighted
                     ? "border-amber-400 border-2 shadow-[0_0_20px_rgba(251,191,36,0.8)] scale-[1.02] transition-all duration-300"
                     : isLatest
                         ? "border-accent border-2 shadow-[0_0_15px_rgba(255,140,0,0.5)]"
-                        : (guess.timesGuessed > 1
-                            ? "border-rose-400 border-2 shadow-[0_0_10px_rgba(251,113,133,0.4)]"
-                            : "border-blueprint-light/50"),
+                        : "border-blueprint-light/50",
                 isNew && showSwoosh ? "animate-swoosh" : ""
             )}
         >
@@ -63,7 +52,14 @@ export default function GuessItem({ guess, index, isNew, isLatest, duplicateTrig
             {/* Content wrapper */}
             <div className="relative z-10 py-1.5 px-3 sm:py-2 flex items-center justify-between">
                 <div>
-                    <span className="font-game text-lg font-bold text-cream tracking-wide">{guess.word}</span>
+                    <div className="flex items-center gap-2">
+                        <span className="font-game text-lg font-bold text-cream tracking-wide">{guess.word}</span>
+                        {guess.timesGuessed > 1 && (
+                            <span className="text-[10px] font-mono tracking-widest uppercase px-2 py-0.5 rounded-full border border-blueprint-light/30 text-cream-dark/70 bg-blueprint-dark/40">
+                                ×{guess.timesGuessed}
+                            </span>
+                        )}
+                    </div>
                     {/* Player name in parenthesis in small letters */}
                     <div className="text-[10px] text-cream-dark/60 mt-0 font-mono tracking-wider uppercase">
                         ({guess.player_name || 'unknown'})

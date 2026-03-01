@@ -5,6 +5,7 @@ import os
 import random
 import asyncio
 import threading
+import re
 
 # The spaCy model will handle lemmatization
 
@@ -356,6 +357,9 @@ class ContextoGame:
         
         if len(guess) == 0:
             return {"error": "Empty guess"}
+
+        if not re.fullmatch(r"[a-z]+", guess):
+            return {"error": "Letters only (A–Z), single word"}
             
         if profanity.contains_profanity(guess):
             return {"error": "NSFW/Profane word rejected"}

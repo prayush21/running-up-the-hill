@@ -1,7 +1,7 @@
 import React from 'react';
 import GuessItem from './GuessItem';
 
-export default function GuessList({ guesses, lastGuess, playerName }) {
+export default function GuessList({ guesses, lastGuess, playerName, activeDuplicateWord }) {
     // allSorted is all guesses sorted by rank
     const sortedByRank = [...guesses].sort((a, b) => a.rank - b.rank);
     const allSorted = sortedByRank;
@@ -15,7 +15,14 @@ export default function GuessList({ guesses, lastGuess, playerName }) {
                         LAST GUESS
                         <span className="w-8 h-[1px] bg-accent/50 ml-3"></span>
                     </h2>
-                    <GuessItem guess={lastGuess} index={0} isNew={lastGuess.isNew} isLatest={true} duplicateTrigger={lastGuess.duplicateTrigger} playerName={playerName} />
+                    <GuessItem
+                        guess={lastGuess}
+                        index={0}
+                        isNew={lastGuess.isNew}
+                        isLatest={true}
+                        isDuplicateHighlighted={activeDuplicateWord === lastGuess.word}
+                        playerName={playerName}
+                    />
                 </div>
             )}
 
@@ -28,7 +35,14 @@ export default function GuessList({ guesses, lastGuess, playerName }) {
                     </h2>
                     <div className="flex flex-col">
                         {allSorted.map((g, i) => (
-                            <GuessItem key={`top-${g.word}`} guess={g} index={i} isNew={false} duplicateTrigger={g.duplicateTrigger} playerName={playerName} />
+                            <GuessItem
+                                key={`top-${g.word}`}
+                                guess={g}
+                                index={i}
+                                isNew={false}
+                                isDuplicateHighlighted={activeDuplicateWord === g.word}
+                                playerName={playerName}
+                            />
                         ))}
                     </div>
                 </div>

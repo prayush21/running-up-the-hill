@@ -7,18 +7,34 @@ import asyncio
 import threading
 import re
 
-# The spaCy model will handle lemmatization
+# The spaCy model will handle lemmatization.
+# IMPORTANT: We lazy-load it to avoid long cold-starts (e.g. on Railway).
 
 VOCAB_URL = "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-no-swears.txt"
 VOCAB_FILE = "vocab.txt"
 
 # Keep the model loaded globally so it's not reloaded per room
-print("Loading Spacy model (en_core_web_lg)...")
-try:
-    nlp = spacy.load("en_core_web_lg")
-except OSError:
-    print("Model not found. Run: python -m spacy download en_core_web_lg")
-    nlp = None
+_nlp = None
+_nlp_lock = threading.Lock()
+
+
+def get_nlp():
+    global _nlp
+    if _nlp is not None:
+        return _nlp
+
+    with _nlp_lock:
+        if _nlp is not None:
+            return _nlp
+
+        model_name = os.environ.get("SPACY_MODEL", "en_core_web_lg")
+        print(f"Loading Spacy model ({model_name})...")
+        try:
+            _nlp = spacy.load(model_name)
+        except OSError:
+            print(f"Model not found: {model_name}. Run: python -m spacy download {model_name}")
+            _nlp = None
+        return _nlp
 
 profanity.load_censor_words()
 
@@ -120,6 +136,7 @@ def ensure_global_vocab_cache():
     global _cached_doc_by_word
     global _cached_family_keys
 
+    nlp = get_nlp()
     if nlp is None:
         raise RuntimeError("Spacy model not loaded.")
 
@@ -191,6 +208,7 @@ def get_word_family_key(word):
     All other forms keep their original lowercase surface form.
     """
     normalized = word.lower().strip()
+    nlp = get_nlp()
     if nlp is None or not normalized:
         return normalized
 
@@ -215,6 +233,7 @@ def is_meaningful_word(word):
     - Particles (to, not)
     - Words shorter than MIN_WORD_LENGTH
     """
+    nlp = get_nlp()
     if nlp is None:
         return False
     
@@ -252,6 +271,7 @@ def is_valid_random_target_word(word: str) -> bool:
 
     Note: custom target_word remains unrestricted (handled in ContextoGame.initialize()).
     """
+    nlp = get_nlp()
     if nlp is None:
         return False
 
@@ -314,6 +334,10 @@ class ContextoGame:
         return meaningful
 
     async def initialize(self, target_word=None, emit_cb=None):
+        nlp = get_nlp()
+        if nlp is None:
+            raise RuntimeError("Spacy model not loaded.")
+
         if emit_cb:
             await emit_cb("Filtering vectors for vocabulary...")
         print("Filtering vectors for vocabulary...")
@@ -397,6 +421,10 @@ class ContextoGame:
             
         family_key = get_word_family_key(guess)
         search_word = self.family_representatives.get(family_key, guess)
+        nlp = get_nlp()
+        if nlp is None:
+            return {"error": "Dictionary unavailable (model not loaded)"}
+
         guess_token = self.family_tokens.get(family_key, nlp(search_word))
         if not guess_token.has_vector:
             fallback_token = nlp(guess)

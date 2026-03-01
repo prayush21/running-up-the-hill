@@ -366,7 +366,7 @@ export default function GameRoom({ roomId, playerName, onLeave }) {
               Victory!
             </h2>
             <p className="text-xl text-cream mb-4 shrink-0">
-              The daily word was{" "}
+              The word was{" "}
               <span className="font-bold underline italic ml-1 block text-3xl mt-4 text-emerald-400 uppercase tracking-widest">
                 {winningWord}
               </span>

@@ -1,7 +1,5 @@
 import { useState, useEffect } from "react";
 
-const PLAYER_NAME_STORAGE_KEY = "contexto.playerName";
-
 export default function Landing({ onJoin }) {
   const [playerName, setPlayerName] = useState("");
   const [roomCode, setRoomCode] = useState("");
@@ -12,16 +10,6 @@ export default function Landing({ onJoin }) {
     const roomParam = params.get("room");
     if (roomParam) {
       setRoomCode(roomParam.toLowerCase());
-    }
-
-    // Restore last-used player name (if any)
-    try {
-      const storedName = window.localStorage.getItem(PLAYER_NAME_STORAGE_KEY);
-      if (storedName && storedName.trim()) {
-        setPlayerName(storedName);
-      }
-    } catch {
-      // ignore (e.g. storage disabled)
     }
   }, []);
 
@@ -42,8 +30,7 @@ export default function Landing({ onJoin }) {
 
   const handleJoin = (e) => {
     e.preventDefault();
-    const trimmedName = playerName.trim();
-    if (!trimmedName) return;
+    if (!playerName.trim()) return;
 
     // Generate structured room code if empty (CVcv##)
     // Use lowercase for consistency with backend create_room.py
@@ -53,13 +40,7 @@ export default function Landing({ onJoin }) {
     const newUrl = `${window.location.pathname}?room=${finalRoom}`;
     window.history.pushState({ path: newUrl }, "", newUrl);
 
-    try {
-      window.localStorage.setItem(PLAYER_NAME_STORAGE_KEY, trimmedName);
-    } catch {
-      // ignore
-    }
-
-    onJoin(finalRoom, trimmedName);
+    onJoin(finalRoom, playerName.trim());
   };
 
   return (
@@ -84,23 +65,7 @@ export default function Landing({ onJoin }) {
               required
               maxLength={20}
               value={playerName}
-              onChange={(e) => {
-                const next = e.target.value;
-                setPlayerName(next);
-                try {
-                  const trimmed = next.trim();
-                  if (trimmed) {
-                    window.localStorage.setItem(
-                      PLAYER_NAME_STORAGE_KEY,
-                      trimmed,
-                    );
-                  } else {
-                    window.localStorage.removeItem(PLAYER_NAME_STORAGE_KEY);
-                  }
-                } catch {
-                  // ignore
-                }
-              }}
+              onChange={(e) => setPlayerName(e.target.value)}
               className="w-full bg-blueprint-dark/50 border border-blueprint-light rounded-xl px-4 py-3 text-cream focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors font-game"
               placeholder="Enter your name"
             />

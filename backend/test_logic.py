@@ -1,5 +1,11 @@
 import asyncio
-from game_logic import ContextoGame, is_meaningful_word, get_word_family_key, nlp
+from game_logic import (
+    ContextoGame,
+    get_word_family_key,
+    is_meaningful_word,
+    is_valid_random_target_word,
+    nlp,
+)
 
 
 def test_is_meaningful_word():
@@ -160,10 +166,19 @@ async def test_contexto_game():
         assert is_meaningful_word(word), f"'{word}' in meaningful_vocab but fails is_meaningful_word"
         doc = nlp(word)
         assert len(doc) > 0, f"Failed to parse '{word}'"
-        assert doc[0].pos_ in {"NOUN", "PROPN"}, (
-            f"'{word}' in meaningful_vocab but is tagged as {doc[0].pos_} (expected NOUN/PROPN)"
+        assert doc[0].pos_ in {"NOUN", "VERB", "ADJ", "ADV"}, (
+            f"'{word}' in meaningful_vocab but is tagged as {doc[0].pos_} (expected NOUN/VERB/ADJ/ADV)"
         )
     print(f"  ✓ All {len(game.meaningful_vocab)} words pass is_meaningful_word check")
+
+    print("\n--- Testing Random Target Validation (proper nouns / places) ---")
+    must_reject = ["texas", "london", "paris", "india", "california"]
+    for w in must_reject:
+        assert not is_valid_random_target_word(w), f"Expected '{w}' to be rejected as a random target"
+
+    must_allow = ["oats", "kangaroo", "yellow"]
+    for w in must_allow:
+        assert is_valid_random_target_word(w), f"Expected '{w}' to be allowed as a random target"
 
     print("\n--- Testing Random Word Selection ---")
     print("Creating 5 games with random target words...")
@@ -177,9 +192,10 @@ async def test_contexto_game():
         assert target not in function_words, f"Random target '{target}' is a function word!"
         target_doc = nlp(target)
         assert len(target_doc) > 0, f"Failed to parse random target '{target}'"
-        assert target_doc[0].pos_ in {"NOUN", "PROPN"}, (
-            f"Random target '{target}' tagged as {target_doc[0].pos_} (expected NOUN/PROPN)"
+        assert target_doc[0].pos_ in {"NOUN", "VERB", "ADJ", "ADV"}, (
+            f"Random target '{target}' tagged as {target_doc[0].pos_} (expected NOUN/VERB/ADJ/ADV)"
         )
+        assert is_valid_random_target_word(target), f"Random target '{target}' failed target validation"
 
     print("\n✅ ContextoGame tests passed!\n")
 

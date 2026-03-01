@@ -26,7 +26,12 @@ profanity.load_censor_words()
 MEANINGFUL_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV", "PROPN"}
 
 # POS tags allowed for RANDOM targets (custom target_word remains unrestricted).
-TARGET_POS_TAGS = {"NOUN", "PROPN"}
+# Intentionally excludes PROPN to avoid city/state/place names as targets.
+TARGET_POS_TAGS = {"NOUN", "VERB", "ADJ", "ADV"}
+
+# NER entity types we reject for RANDOM targets. (Single-word NER can be noisy, so
+# we keep this list narrow and focused on geographic places.)
+DISALLOWED_TARGET_ENTITY_TYPES = {"GPE", "LOC", "FAC"}
 
 # Minimum word length for target words
 MIN_WORD_LENGTH = 4
@@ -93,24 +98,16 @@ def load_vocab():
 def _filter_meaningful_vocab(vocab):
     """Filter vocabulary for random target selection.
 
-    Restricts targets to NOUN/PROPN while also:
+    Restricts targets to TARGET_POS_TAGS while also:
     - respecting MIN_WORD_LENGTH
     - excluding function words
     - avoiding cases like 'days' -> 'day' (too short)
     """
-    print("Filtering vocabulary for meaningful NOUN/PROPN target words...")
+    print("Filtering vocabulary for meaningful random target words...")
     meaningful = []
     for w in vocab[:2000]:
-        if not is_meaningful_word(w):
+        if not is_valid_random_target_word(w):
             continue
-        doc = nlp(w)
-        if len(doc) > 0:
-            token = doc[0]
-            if token.pos_ not in TARGET_POS_TAGS:
-                continue
-            lemma = token.lemma_
-            if lemma != w and len(lemma) < MIN_WORD_LENGTH:
-                continue
         meaningful.append(w)
     print(f"Found {len(meaningful)} meaningful words from top 2000")
     return meaningful
@@ -244,6 +241,47 @@ def is_meaningful_word(word):
     
     return True
 
+
+def is_valid_random_target_word(word: str) -> bool:
+    """Validate whether a vocab word is eligible for RANDOM target selection.
+
+    Goals:
+    - Exclude function words and very short words (via is_meaningful_word + MIN_WORD_LENGTH)
+    - Exclude proper nouns (PROPN), especially city/state/place names
+    - Keep regular nouns/adjectives/etc. like 'oats', 'kangaroo', 'yellow'
+
+    Note: custom target_word remains unrestricted (handled in ContextoGame.initialize()).
+    """
+    if nlp is None:
+        return False
+
+    w = (word or "").lower().strip()
+    if not w:
+        return False
+
+    if not is_meaningful_word(w):
+        return False
+
+    doc = nlp(w)
+    if len(doc) == 0:
+        return False
+
+    token = doc[0]
+
+    if token.pos_ not in TARGET_POS_TAGS:
+        return False
+
+    # Extra guardrail for geographic-like targets.
+    if token.ent_type_ in DISALLOWED_TARGET_ENTITY_TYPES:
+        return False
+
+    # If lemma collapses to something too short, skip (e.g. 'days' -> 'day').
+    lemma = (token.lemma_ or "").lower().strip()
+    if lemma and lemma != w and len(lemma) < MIN_WORD_LENGTH:
+        return False
+
+    return True
+
 class ContextoGame:
     def __init__(self):
         self.vocab = None
@@ -261,26 +299,16 @@ class ContextoGame:
     def _filter_meaningful_vocab(self):
         """Filter vocabulary for random target selection.
 
-        Restricts targets to NOUN/PROPN while also:
+        Restricts targets to TARGET_POS_TAGS while also:
         - respecting MIN_WORD_LENGTH
         - excluding function words
         - avoiding cases like 'days' -> 'day' (too short)
         """
-        print("Filtering vocabulary for meaningful NOUN/PROPN target words...")
+        print("Filtering vocabulary for meaningful random target words...")
         meaningful = []
         for w in self.vocab[:2000]:
-            if not is_meaningful_word(w):
+            if not is_valid_random_target_word(w):
                 continue
-            # Also check the lemmatized form
-            doc = nlp(w)
-            if len(doc) > 0:
-                token = doc[0]
-                if token.pos_ not in TARGET_POS_TAGS:
-                    continue
-                lemma = token.lemma_
-                # If lemma is different and doesn't meet criteria, skip this word
-                if lemma != w and len(lemma) < MIN_WORD_LENGTH:
-                    continue
             meaningful.append(w)
         print(f"Found {len(meaningful)} meaningful words from top 2000")
         return meaningful

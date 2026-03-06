@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Conexto Team favicon">
+  <rect width="256" height="256" rx="32" fill="#1a3a6d" />
+  <circle cx="128" cy="128" r="86" fill="none" stroke="#f5f5dc" stroke-width="20" />
+  <rect x="128" y="28" width="108" height="200" fill="#1a3a6d" />
+  <path d="M182 84c-13-14-32-22-54-22-39 0-66 28-66 66s27 66 66 66c22 0 41-8 54-22" fill="none" stroke="#f5f5dc" stroke-width="10" stroke-linecap="round" />
+</svg>
